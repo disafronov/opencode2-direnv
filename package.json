@@ -1,0 +1,68 @@
+{
+  "name": "opencode2-direnv",
+  "version": "0.0.0",
+  "description": "OpenCode V2 server plugin that authorizes direnv environments through native interactive permission prompts",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run typecheck && npm run test:unit && npm run test:integration",
+    "test:unit": "node --import tsx --test \"test/unit/**/*.test.ts\"",
+    "test:integration": "npm run build && node --import tsx --test --test-concurrency=1 \"test/integration/**/*.test.ts\"",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@opencode/client": "2.4.1",
+    "@opencode/plugin": "2.4.1",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode2",
+    "plugin",
+    "direnv",
+    "permission",
+    "mcp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/disafronov/opencode2-direnv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/disafronov/opencode2-direnv/issues"
+  },
+  "homepage": "https://github.com/disafronov/opencode2-direnv#readme",
+  "peerDependencies": {
+    "@opencode/plugin": "^2.4.1"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
+  }
+}
