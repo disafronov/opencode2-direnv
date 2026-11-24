@@ -1,0 +1,84 @@
+name: Lint and test
+
+"on":
+  pull_request:
+    branches:
+      - main
+      - rc
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+  test:
+    name: "Test (Node ${{ matrix.node-version }})"
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        node-version: [24, 26]
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install direnv
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/direnv \
+            https://github.com/direnv/direnv/releases/download/v2.38.2/direnv.linux-amd64
+          sudo chmod 0755 /usr/local/bin/direnv
+          direnv version
+
+      - name: Install OpenCode V2
+        run: |
+          npm install --no-save --ignore-scripts @opencode/cli-linux-x64@2.4.1
+          node_modules/@opencode/cli-linux-x64/bin/opencode --version
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests
+        env:
+          OPENCODE2_BIN: ${{ github.workspace }}/node_modules/@opencode/cli-linux-x64/bin/opencode
+          DIRENV_BIN: /usr/local/bin/direnv
+        run: npm run test:integration

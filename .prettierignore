@@ -1,0 +1,7 @@
+dist
+node_modules
+CHANGELOG.md
+package-lock.json
+.github/workflows/semantic.yml
+
+.envrc
