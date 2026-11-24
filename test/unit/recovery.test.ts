@@ -12,6 +12,8 @@ function fakeContext(status: "failed" | "pending" | "connected" | "disabled") {
   const transforms: Array<(editor: unknown) => void> = []
   let disabled: boolean | undefined
   let failFirstReload = false
+  let failSecondReload = false
+  let reloadCount = 0
 
   const editor = {
     list: () => [["wrapped", { type: "local", command: ["direnv", "exec", "/project", "node", "server.js"] }]] as const,
@@ -39,8 +41,13 @@ function fakeContext(status: "failed" | "pending" | "connected" | "disabled") {
       reload: async () => {
         replay()
         reloads.push(disabled === true ? "disabled" : "original")
+        reloadCount++
         if (failFirstReload) {
           failFirstReload = false
+          throw new Error("reload failed")
+        }
+        if (failSecondReload && reloadCount % 2 === 0) {
+          failSecondReload = false
           throw new Error("reload failed")
         }
       },
@@ -52,6 +59,9 @@ function fakeContext(status: "failed" | "pending" | "connected" | "disabled") {
     reloads,
     failFirst: () => {
       failFirstReload = true
+    },
+    failSecond: () => {
+      failSecondReload = true
     },
   }
 }
@@ -89,6 +99,23 @@ test("temporary overrides are cleared when the first reload fails", async () => 
   await recovery.start()
   await assert.rejects(recovery.recover(), /reload failed/)
   assert.deepEqual(fake.reloads, ["disabled", "original"])
+
+  await recovery.recover()
+  assert.deepEqual(fake.reloads, ["disabled", "original", "disabled", "original"])
+})
+
+test("temporary overrides are cleared when the second reload fails", async () => {
+  const fake = fakeContext("failed")
+  fake.failSecond()
+  const recovery = new McpRecovery(fake.context)
+  await recovery.start()
+  await assert.rejects(recovery.recover(), /reload failed/)
+  assert.deepEqual(fake.reloads, ["disabled", "original"])
+
+  // A later recovery must start from the original configuration, not from a
+  // leaked temporary override.
+  await recovery.recover()
+  assert.deepEqual(fake.reloads, ["disabled", "original", "disabled", "original"])
 })
 
 test("concurrent recovery calls share one operation", async () => {

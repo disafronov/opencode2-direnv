@@ -3,7 +3,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
-import { environmentForDirenv, findExecutable, parseStatus, probeDirenv, readStatus } from "../../src/direnv.js"
+import {
+  environmentForDirenv,
+  findExecutable,
+  parseStatus,
+  probeDirenv,
+  readStatus,
+  runCommand,
+} from "../../src/direnv.js"
 
 test("a directory without an environment is unmanaged", () => {
   assert.deepEqual(parseStatus("No .envrc or .env loaded\nNo .envrc or .env found\n"), { kind: "unmanaged" })
@@ -96,8 +103,8 @@ test("findExecutable resolves an executable on PATH", () => {
 test("a missing direnv executable is reported as unavailable", () => {
   const directory = mkdtempSync(join(tmpdir(), "opencode2-direnv-unit-"))
   try {
-    assert.deepEqual(probeDirenv({ PATH: directory }), { available: false, reason: "missing" })
-    assert.deepEqual(probeDirenv({}), { available: false, reason: "missing" })
+    assert.equal(probeDirenv({ PATH: directory }), undefined)
+    assert.equal(probeDirenv({}), undefined)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -113,6 +120,64 @@ test("an unrelated direnv failure is reported as an error, not as authorization"
       kind: "error",
       message: "direnv status exited with code 3",
     })
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("subprocess timeouts are bounded", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode2-direnv-unit-"))
+  try {
+    const result = await runCommand(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+      cwd: directory,
+      env: process.env,
+      timeoutMs: 100,
+    })
+    assert.equal(result.timedOut, true)
+    assert.equal(result.code, null)
+    assert.equal(result.stdout, "")
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("subprocess output is bounded", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode2-direnv-unit-"))
+  try {
+    const result = await runCommand(process.execPath, ["-e", "process.stdout.write('x'.repeat(4096))"], {
+      cwd: directory,
+      env: process.env,
+      maxOutputBytes: 1024,
+    })
+    assert.equal(result.overflowed, true)
+    assert.equal(result.code, null)
+    assert.equal(result.stdout, "")
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("subprocess spawn failures are reported without throwing", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode2-direnv-unit-"))
+  try {
+    const result = await runCommand(join(directory, "missing"), [], { cwd: directory, env: process.env })
+    assert.equal(result.errorCode, "ENOENT")
+    assert.equal(result.code, null)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("subprocess exit codes are reported", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode2-direnv-unit-"))
+  try {
+    const binary = join(directory, "fail")
+    writeFileSync(binary, "#!/bin/sh\nexit 3\n")
+    chmodSync(binary, 0o755)
+    const result = await runCommand(binary, [], { cwd: directory, env: process.env })
+    assert.equal(result.code, 3)
+    assert.equal(result.timedOut, false)
+    assert.equal(result.overflowed, false)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

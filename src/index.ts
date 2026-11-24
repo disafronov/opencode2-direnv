@@ -53,8 +53,8 @@ const plugin = Plugin.define({
     const environment: Environment = process.env
     const diagnostics = new Diagnostics()
 
-    const availability = probeDirenv(environment)
-    if (!availability.available) {
+    const binary = probeDirenv(environment)
+    if (binary === undefined) {
       diagnostics.report(
         "missing",
         "warn",
@@ -63,7 +63,6 @@ const plugin = Plugin.define({
       return
     }
 
-    const binary = availability.binary
     const recovery = new McpRecovery(context)
     await recovery.start()
 
@@ -74,7 +73,7 @@ const plugin = Plugin.define({
       if (event.action !== DIRENV_ALLOW_ACTION) return
       const target = event.resources[0] ?? directory
       event.effect = "ask"
-      event.message = `Authorize direnv for ${target}? Approving lets OpenCode execute project-controlled shell code from this directory's .envrc on the server.`
+      event.message = `Authorize direnv for ${target}? Approving permits subsequent execution of project-controlled shell code from this directory's .envrc on the server.`
     })
 
     let inFlight: Promise<void> | undefined
@@ -87,7 +86,7 @@ const plugin = Plugin.define({
         diagnostics.report(
           `mcp:${message}`,
           "warn",
-          `failed to restart direnv-wrapped MCP servers for ${directory}: ${message}`,
+          `failed to restart direnv-wrapped MCP servers for ${directory}: ${message}; reconnect them manually`,
         )
       }
     }
@@ -141,8 +140,16 @@ const plugin = Plugin.define({
         }
 
         const verified = await readStatus(binary, directory, environment)
-        if (verified.kind !== "authorized" || verified.allowPath !== identity) {
+        if (verified.kind !== "authorized") {
           diagnostics.report("verify", "warn", `direnv authorization could not be verified for ${directory}`)
+          return
+        }
+        if (verified.allowPath !== identity) {
+          diagnostics.report(
+            "verify-different",
+            "warn",
+            `direnv authorized content that differs from the approved environment for ${directory}; MCP recovery was skipped and the authorization was not revoked`,
+          )
           return
         }
 

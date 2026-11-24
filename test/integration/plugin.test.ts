@@ -2,7 +2,16 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { createServer } from "node:http"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { createServer as createNetServer } from "node:net"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
@@ -43,6 +52,29 @@ interface PermissionAsk {
 
 interface ToolRequest {
   readonly tools: readonly string[]
+}
+
+interface LlmRequest {
+  readonly body: unknown
+}
+
+const llmRequests: LlmRequest[] = []
+
+function toolNamesFromRequestBody(body: unknown): string[] {
+  if (typeof body !== "object" || body === null) return []
+  const tools = (body as { tools?: unknown }).tools
+  if (!Array.isArray(tools)) return []
+  const names: string[] = []
+  for (const tool of tools) {
+    if (typeof tool !== "object" || tool === null) continue
+    const fn = (tool as { function?: unknown }).function
+    if (typeof fn === "object" && fn !== null && typeof (fn as { name?: unknown }).name === "string") {
+      names.push((fn as { name: string }).name)
+    } else if (typeof (tool as { name?: unknown }).name === "string") {
+      names.push((tool as { name: string }).name)
+    }
+  }
+  return names
 }
 
 let root: string
@@ -95,6 +127,10 @@ function resolveDirenvBinary(): string {
   const binary = process.env.DIRENV_BIN ?? which("direnv")
   if (!binary) throw new Error("direnv was not found. Set DIRENV_BIN to the direnv executable.")
   return binary
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`
 }
 
 function writeJson(path: string, value: unknown): void {
@@ -214,14 +250,18 @@ function runDirenv(command: "allow" | "deny", directory: string): void {
   if (result.status !== 0) throw new Error(`direnv ${command} failed: ${result.stderr}`)
 }
 
-function direnvStatus(directory: string): DirenvStatus {
+function direnvStatusWith(environment: Record<string, string>, directory: string): DirenvStatus {
   const result = spawnSync(direnvBinary, ["status"], {
     cwd: directory,
-    env: direnvEnvironment,
+    env: environment,
     encoding: "utf8",
   })
   if (result.status !== 0) throw new Error(`direnv status failed: ${result.stderr}`)
   return parseStatus(result.stdout)
+}
+
+function direnvStatus(directory: string): DirenvStatus {
+  return direnvStatusWith(direnvEnvironment, directory)
 }
 
 function readSnapshot(path: string): { pid?: number; value?: string | null } | undefined {
@@ -252,20 +292,38 @@ async function waitFor<T>(
   throw new Error(`timed out waiting for ${label}; last result: ${String(last)}\n${serverLogs.slice(-4_000)}`)
 }
 
-async function waitForStatus(directory: string, kind: DirenvStatus["kind"], allowPath?: string): Promise<void> {
+async function waitForStatusWith(
+  environment: Record<string, string>,
+  directory: string,
+  kind: DirenvStatus["kind"],
+  allowPath?: string,
+): Promise<void> {
   await waitFor(() => {
-    const status = direnvStatus(directory)
+    const status = direnvStatusWith(environment, directory)
     if (status.kind !== kind) return false
     if (allowPath === undefined) return true
     return "allowPath" in status && status.allowPath === allowPath
   }, `${directory} direnv ${kind}`)
 }
 
-async function waitForMcp(directory: string, name: string, status: string): Promise<void> {
+async function waitForStatus(directory: string, kind: DirenvStatus["kind"], allowPath?: string): Promise<void> {
+  await waitForStatusWith(direnvEnvironment, directory, kind, allowPath)
+}
+
+async function waitForMcpClient(
+  target: ReturnType<typeof OpenCode.make>,
+  directory: string,
+  name: string,
+  status: string,
+): Promise<void> {
   await waitFor(async () => {
-    const list = await client.mcp.list({ location: { directory } })
+    const list = await target.mcp.list({ location: { directory } })
     return list.data.some((server) => server.name === name && server.status.status === status)
   }, `${name} ${status}`)
+}
+
+async function waitForMcp(directory: string, name: string, status: string): Promise<void> {
+  await waitForMcpClient(client, directory, name, status)
 }
 
 async function waitForTools(sessionID: string): Promise<ToolRequest> {
@@ -277,6 +335,28 @@ async function waitForTools(sessionID: string): Promise<ToolRequest> {
       return false
     }
   }, `tools for ${sessionID}`)
+}
+
+function collectPermissions(target: ReturnType<typeof OpenCode.make>, sink: PermissionAsk[]): () => void {
+  const controller = new AbortController()
+  void (async () => {
+    try {
+      for await (const event of target.event.subscribe({ signal: controller.signal })) {
+        if (event.type !== "permission.asked") continue
+        sink.push({
+          sessionID: event.data.sessionID,
+          id: event.data.id,
+          action: event.data.action,
+          resources: event.data.resources,
+          message: event.data.message,
+          directory: event.location?.directory,
+        })
+      }
+    } catch {
+      // The server is shutting down.
+    }
+  })()
+  return () => controller.abort()
 }
 
 async function createSession(directory: string, permissions?: ProjectOptions["permissions"]): Promise<string> {
@@ -319,8 +399,14 @@ async function freePort(): Promise<number> {
 
 async function startFakeLlm(): Promise<string> {
   const serverInstance = createServer((request, response) => {
-    request.resume()
+    let body = ""
+    request.on("data", (chunk: Buffer) => (body += chunk.toString()))
     request.on("end", () => {
+      try {
+        llmRequests.push({ body: JSON.parse(body) })
+      } catch {
+        llmRequests.push({ body: undefined })
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -344,6 +430,52 @@ async function startFakeLlm(): Promise<string> {
   await new Promise<void>((resolve) => serverInstance.listen(port, "127.0.0.1", resolve))
   fakeLlm = serverInstance
   return `http://127.0.0.1:${port}/v1`
+}
+
+interface AuxServer {
+  readonly client: ReturnType<typeof OpenCode.make>
+  readonly stop: () => Promise<void>
+}
+
+async function startAuxServer(environment: Record<string, string>): Promise<AuxServer> {
+  const port = await freePort()
+  const childEnvironment: Record<string, string> = {
+    ...direnvEnvironment,
+    ...environment,
+    OPENCODE_SERVER_PASSWORD: serverPassword,
+  }
+  delete childEnvironment.OPENCODE_PASSWORD
+  const child = spawn(opencodeBinary, ["serve", "--hostname", "127.0.0.1", "--port", String(port), "--print-logs"], {
+    cwd: root,
+    env: childEnvironment,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  child.stdout?.on("data", (chunk: Buffer) => (serverLogs += chunk.toString()))
+  child.stderr?.on("data", (chunk: Buffer) => (serverLogs += chunk.toString()))
+
+  const aux = OpenCode.make({
+    baseUrl: `http://127.0.0.1:${port}`,
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${serverPassword}`).toString("base64")}` },
+  })
+  await waitFor(async () => {
+    try {
+      await aux.server.info()
+      return true
+    } catch {
+      return false
+    }
+  }, "auxiliary OpenCode server")
+
+  return {
+    client: aux,
+    stop: async () => {
+      if (child.exitCode !== null) return
+      child.kill("SIGTERM")
+      await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 5_000))])
+      if (child.exitCode === null) child.kill("SIGKILL")
+      await Promise.race([once(child, "exit"), new Promise((resolve) => setTimeout(resolve, 1_000))]).catch(() => {})
+    },
+  }
 }
 
 before(async () => {
@@ -425,24 +557,7 @@ before(async () => {
       return false
     }
   }, "OpenCode server")
-  const controller = new AbortController()
-  void (async () => {
-    try {
-      for await (const event of client.event.subscribe({ signal: controller.signal })) {
-        if (event.type !== "permission.asked") continue
-        permissionAsks.push({
-          sessionID: event.data.sessionID,
-          id: event.data.id,
-          action: event.data.action,
-          resources: event.data.resources,
-          message: event.data.message,
-          directory: event.location?.directory,
-        })
-      }
-    } catch {
-      // The server is shutting down.
-    }
-  })()
+  collectPermissions(client, permissionAsks)
 })
 
 after(async () => {
@@ -484,7 +599,7 @@ test("an already authorized environment is used without a prompt", async () => {
     false,
   )
   const tools = await waitForTools(sessionID)
-  assert.ok(tools.tools.some((tool) => tool.includes("environment_value")))
+  assert.ok(tools.tools.includes("wrapped_environment_value"))
   assert.equal(readSnapshot(project.wrappedSnapshot)?.value, "authorized")
 })
 
@@ -506,13 +621,28 @@ test("missing authorization is granted through the permission prompt and MCP too
   assert.deepEqual(ask.resources, [project.directory])
   assert.ok(ask.message?.includes(project.directory))
   assert.match(ask.message ?? "", /shell code/i)
+  assert.match(ask.message ?? "", /subsequent/i)
+  const requestMarker = llmRequests.length
   await reply(ask, "once")
   await admission
 
   await waitForStatus(project.directory, "authorized")
   await waitForMcp(project.directory, "wrapped", "connected")
   const tools = await waitForTools(sessionID)
-  assert.ok(tools.tools.some((tool) => tool.includes("environment_value")))
+  assert.ok(tools.tools.includes("wrapped_environment_value"))
+  assert.ok(tools.tools.includes("plain_environment_value"))
+
+  // Inspect the actual first model request after approval, not only the
+  // session context hook.
+  const requestsWithTools = llmRequests
+    .slice(requestMarker)
+    .map((entry) => toolNamesFromRequestBody(entry.body))
+    .filter((names) => names.length > 0)
+  assert.ok(requestsWithTools.length > 0, "no model request with tools followed approval")
+  assert.ok(
+    requestsWithTools[0]?.includes("wrapped_environment_value"),
+    `first model request tools: ${JSON.stringify(requestsWithTools[0])}`,
+  )
   assert.equal(readSnapshot(project.wrappedSnapshot)?.value, "approved")
 
   // Unrelated and intentionally disabled servers are preserved.
@@ -581,6 +711,18 @@ test("an explicit OpenCode denial is preserved", async () => {
   assert.equal(direnvStatus(project.directory).kind, "needs-authorization")
 })
 
+test("a configured allow rule still requires confirmation", async () => {
+  const project = createProject("configured-allow", { envrc: "export DIRENV_TEST_VALUE=configured\n" })
+  const sessionID = await createSession(project.directory, [{ action: "direnv.allow", resource: "*", effect: "allow" }])
+  const admission = prompt(sessionID)
+  const ask = await waitForAsk(sessionID)
+  assert.equal(ask.action, "direnv.allow")
+  await reply(ask, "reject")
+  await admission
+  assert.equal(direnvStatus(project.directory).kind, "needs-authorization")
+  await waitForMcp(project.directory, "wrapped", "failed")
+})
+
 test("an explicit direnv denial is not overridden", async (t) => {
   const project = createProject("denied-by-direnv", {
     envrc: "export DIRENV_TEST_VALUE=denied\n",
@@ -612,6 +754,8 @@ test("a changed environment requires renewed authorization", async () => {
     false,
   )
   await waitFor(() => readSnapshot(project.wrappedSnapshot)?.value === "first", "initial MCP environment")
+  const original = readSnapshot(project.wrappedSnapshot)
+  assert.ok(original?.pid)
 
   writeFileSync(join(project.directory, ".envrc"), "export DIRENV_TEST_VALUE=second\n")
   const second = await createSession(project.directory)
@@ -619,8 +763,12 @@ test("a changed environment requires renewed authorization", async () => {
   await waitForStatus(project.directory, "authorized")
 
   // A connected MCP server keeps the environment it started with. The plugin
-  // only restarts failed or pending servers, so the next prompt must not ask
-  // for authorization again.
+  // only restarts failed or pending servers, so the process and its environment
+  // must be unchanged after renewed authorization.
+  const retained = readSnapshot(project.wrappedSnapshot)
+  assert.equal(retained?.pid, original.pid)
+  assert.equal(retained?.value, "first")
+
   const third = await createSession(project.directory)
   await prompt(third)
   assert.equal(
@@ -717,4 +865,64 @@ test("unattended execution cannot silently authorize direnv", async () => {
   assert.match(result.output, /direnv\.allow/)
   assert.match(result.output, /auto-rejecting/)
   assert.equal(direnvStatus(project.directory).kind, "needs-authorization")
+})
+
+test("a pending direnv-wrapped MCP server is recovered", async () => {
+  const project = createProject("pending-mcp", { envrc: "export DIRENV_TEST_VALUE=pending\n" })
+  const wrapperDirectory = join(root, "pending-bin")
+  mkdirSync(wrapperDirectory, { recursive: true })
+  const lock = join(root, "pending-exec.lock")
+  const wrapper = join(wrapperDirectory, "direnv")
+  writeFileSync(
+    wrapper,
+    `#!/bin/sh
+if [ "$1" = "exec" ]; then
+  if mkdir ${shellQuote(lock)} 2>/dev/null; then
+    exec sleep 60
+  fi
+fi
+exec ${shellQuote(direnvBinary)} "$@"
+`,
+  )
+  chmodSync(wrapper, 0o755)
+
+  const data = join(root, "pending-xdg", "data")
+  const config = join(root, "pending-xdg", "config")
+  const cache = join(root, "pending-xdg", "cache")
+  for (const directory of [data, config, cache]) mkdirSync(directory, { recursive: true })
+  const environment: Record<string, string> = {
+    ...direnvEnvironment,
+    PATH: `${wrapperDirectory}${delimiter}${process.env.PATH ?? ""}`,
+    XDG_DATA_HOME: data,
+    XDG_CONFIG_HOME: config,
+    XDG_CACHE_HOME: cache,
+    DIRENV_TEST_LLM_URL: fakeLlmUrl,
+    DIRENV_TEST_TOOLS_DIR: toolsDirectory,
+    OPENCODE_DISABLE_MODELS_FETCH: "1",
+    PWD: root,
+  }
+
+  const aux = await startAuxServer(environment)
+  const asks: PermissionAsk[] = []
+  const close = collectPermissions(aux.client, asks)
+  try {
+    const session = await aux.client.session.create({
+      title: "pending MCP",
+      location: { directory: project.directory },
+      model: { providerID: "direnvtest", id: "echo" },
+    })
+    await waitForMcpClient(aux.client, project.directory, "wrapped", "pending")
+
+    const admission = aux.client.session.prompt({ sessionID: session.id, text: "hello" })
+    const ask = await waitFor(() => asks.find((entry) => entry.sessionID === session.id), "permission for pending MCP")
+    await aux.client.permission.reply({ sessionID: ask.sessionID, requestID: ask.id, decision: "once" })
+    await admission
+
+    await waitForStatusWith(environment, project.directory, "authorized")
+    await waitForMcpClient(aux.client, project.directory, "wrapped", "connected")
+    assert.equal(readSnapshot(project.wrappedSnapshot)?.value, "pending")
+  } finally {
+    close()
+    await aux.stop()
+  }
 })
