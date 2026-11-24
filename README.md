@@ -13,6 +13,8 @@ environment.
 - **OpenCode V2**. Validated against OpenCode `2.4.1`.
 - **direnv** on the `PATH` of the OpenCode server process. Validated against
   `2.32.1` and `2.38.2`.
+- **Node.js 24 or newer** for development and package installation. Validated
+  on Node.js 24 and 26.
 - POSIX server platforms. Windows is not tested.
 
 OpenCode V1 and the V1 plugin API are not supported.
@@ -81,8 +83,9 @@ prompt continues normally.
 ### Permission details
 
 - The action is `direnv.allow` and the resource is the project directory.
-- The prompt text states that approval lets OpenCode execute project-controlled
-  shell code from `.envrc` on the server.
+- The prompt text states that approval permits subsequent execution of
+  project-controlled shell code from `.envrc` on the server. Running
+  `direnv allow` itself does not execute the file.
 - `save: []` is passed to `ctx.permission.assert()`, so **Always allow** has the
   same practical effect as **Allow once**: no rule is persisted.
 - An `evaluate` hook forces `ask` for `direnv.allow`, even when a configured rule
@@ -151,6 +154,23 @@ Those versions have no distinct deny state. `direnv deny` only removes an allow
 record, so the environment appears as needing authorization rather than
 explicitly denied.
 
+### MCP recovery is not retried
+
+If recovery fails after a successful direnv authorization, later prompts do not
+retry it: the environment is already authorized, so the prompt hook has nothing
+to authorize or recover. Reconnect the affected server manually. There is no
+background reconciliation.
+
+### Residual TOCTOU during `direnv allow`
+
+Direnv provides no CLI option to authorize a specific content hash. `direnv
+allow` always records the content it finds when it runs. The plugin re-reads the
+identity after approval and immediately before running `direnv allow`, but a
+change in the remaining window can still be authorized by direnv. The plugin
+detects the mismatch after the command, skips MCP recovery, and does not revoke
+the authorization: automatic revocation is out of scope. Review the direnv state
+manually if this happens.
+
 ### Other limits
 
 - **No environment injection.** `direnv allow` records authorization; the plugin
@@ -164,8 +184,8 @@ explicitly denied.
 - `direnv` is run without a shell, with a timeout and bounded output.
 - State from a previously loaded direnv environment is removed from the child
   environment before running `direnv status` or `direnv allow`.
-- Approving the prompt executes project-controlled code on the server. Treat it
-  like any other permission that runs shell code.
+- Approving the prompt permits subsequent execution of project-controlled code
+  on the server. Treat it like any other permission that runs shell code.
 
 ## Development
 

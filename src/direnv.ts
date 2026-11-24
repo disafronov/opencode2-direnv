@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process"
+import { execFile } from "node:child_process"
 import { accessSync, constants } from "node:fs"
 import { delimiter, join } from "node:path"
 
@@ -93,103 +93,63 @@ export function findExecutable(name: string, path: string | undefined): string |
   return undefined
 }
 
-/** Reports whether direnv is installed for this server process. */
-export function probeDirenv(environment: Environment = process.env): DirenvAvailability {
-  const binary = findExecutable("direnv", environment.PATH)
-  return binary ? { available: true, binary } : { available: false, reason: "missing" }
-}
-
-function killProcessGroup(child: ChildProcess): void {
-  if (child.pid === undefined) return
-  try {
-    if (process.platform === "win32") child.kill("SIGKILL")
-    else process.kill(-child.pid, "SIGKILL")
-  } catch {
-    try {
-      child.kill("SIGKILL")
-    } catch {
-      // The process already exited.
-    }
-  }
+/** Resolves the direnv executable for this server process, if installed. */
+export function probeDirenv(environment: Environment = process.env): string | undefined {
+  return findExecutable("direnv", environment.PATH)
 }
 
 /**
  * Runs a command directly, without a shell, and bounds its lifetime and output.
  *
- * Stderr is drained and discarded because direnv diagnostics may contain
- * environment values.
+ * `execFile` supplies the timeout, output limit, and kill handling. Direnv's
+ * `status` and `allow` commands only inspect or record the RC file; they do not
+ * evaluate it, so killing the direct child is sufficient. Stderr is never read
+ * or logged because direnv diagnostics may contain environment values.
  */
 export function runCommand(binary: string, args: readonly string[], options: CommandOptions): Promise<CommandResult> {
   const timeoutMs = options.timeoutMs ?? DIRENV_TIMEOUT_MS
-  const maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES
+  const maxBuffer = options.maxOutputBytes ?? MAX_OUTPUT_BYTES
 
   return new Promise<CommandResult>((resolve) => {
-    let child: ChildProcess
-    try {
-      child = spawn(binary, [...args], {
+    execFile(
+      binary,
+      [...args],
+      {
         cwd: options.cwd,
         env: options.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+        encoding: "utf8",
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer,
         windowsHide: true,
-      })
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      resolve({ code: null, stdout: "", timedOut: false, overflowed: false, ...(code ? { errorCode: code } : {}) })
-      return
-    }
-
-    const chunks: Buffer[] = []
-    let bytes = 0
-    let timedOut = false
-    let overflowed = false
-    let settled = false
-    let forceTimeout: NodeJS.Timeout | undefined
-
-    const finish = (code: number | null, errorCode?: string): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      if (forceTimeout) clearTimeout(forceTimeout)
-      resolve({
-        code,
-        stdout: Buffer.concat(chunks).toString("utf8"),
-        timedOut,
-        overflowed,
-        ...(errorCode ? { errorCode } : {}),
-      })
-    }
-
-    const abort = (): void => {
-      killProcessGroup(child)
-      // The group kill normally closes the child immediately. Resolve anyway so
-      // a process that escaped the group can never hang the plugin.
-      forceTimeout = setTimeout(() => finish(null), 1_000)
-    }
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (timedOut || overflowed) return
-      bytes += chunk.length
-      if (bytes > maxOutputBytes) {
-        overflowed = true
-        abort()
-        return
-      }
-      chunks.push(chunk)
-    })
-    // Discard rather than retain: direnv can print variable values on stderr.
-    child.stderr?.resume()
-
-    child.once("error", (error) => {
-      const code = (error as NodeJS.ErrnoException).code
-      finish(null, code)
-    })
-    child.once("close", (code) => finish(code))
-
-    const timeout = setTimeout(() => {
-      timedOut = true
-      abort()
-    }, timeoutMs)
+      },
+      (error, stdout) => {
+        if (error === null) {
+          resolve({ code: 0, stdout, timedOut: false, overflowed: false })
+          return
+        }
+        if (error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+          resolve({ code: null, stdout: "", timedOut: false, overflowed: true })
+          return
+        }
+        if (typeof error.code === "string" && error.code.length > 0) {
+          // A spawn failure such as ENOENT, not an exit code.
+          resolve({ code: null, stdout: "", timedOut: false, overflowed: false, errorCode: error.code })
+          return
+        }
+        if (error.killed === true) {
+          // The only signal this helper sends is the timeout SIGKILL.
+          resolve({ code: null, stdout: "", timedOut: true, overflowed: false })
+          return
+        }
+        resolve({
+          code: typeof error.code === "number" ? error.code : null,
+          stdout: "",
+          timedOut: false,
+          overflowed: false,
+        })
+      },
+    )
   })
 }
 
