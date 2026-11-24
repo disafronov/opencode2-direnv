@@ -6,7 +6,7 @@ const PLUGIN_ID = "opencode2-direnv"
 const LOG_PREFIX = `[${PLUGIN_ID}]`
 
 /** Dedicated permission action used for the direnv authorization prompt. */
-export const DIRENV_ALLOW_ACTION = "direnv.allow"
+const DIRENV_ALLOW_ACTION = "direnv.allow"
 
 type LogLevel = "info" | "warn"
 

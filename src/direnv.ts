@@ -20,10 +20,6 @@ const STALE_STATE_VARIABLES = ["DIRENV_DIR", "DIRENV_FILE", "DIRENV_DIFF", "DIRE
 /** Minimal process environment type shared by the plugin. */
 export type Environment = Readonly<Record<string, string | undefined>>
 
-/** Whether a usable direnv executable can be found on the server's `PATH`. */
-export type DirenvAvailability =
-  { readonly available: true; readonly binary: string } | { readonly available: false; readonly reason: "missing" }
-
 /**
  * The authorization state of the environment that applies to a directory.
  *
