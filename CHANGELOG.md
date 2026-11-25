@@ -1,3 +1,14 @@
+## 1.0.0 (2026-11-25)
+
+### Features
+
+* add direnv authorization bridge for OpenCode V2 ([5bc27fd](https://github.com/disafronov/opencode2-direnv/commit/5bc27fd7dfb5b7650e79cf1751ddf5edaf1654bf))
+
+### Code Refactoring
+
+* remove unused direnv availability type ([9fb3875](https://github.com/disafronov/opencode2-direnv/commit/9fb387541ea1011dda4c5b8af08a09138b3267b6))
+* simplify direnv execution and harden recovery tests ([cce156b](https://github.com/disafronov/opencode2-direnv/commit/cce156b75c673408d48606e8d407efb24cdcb6b5))
+
 ## [4.0.4](https://github.com/disafronov/semantic-basic-template/compare/v4.0.3...v4.0.4) (2026-11-23)
 
 ### Bug Fixes
