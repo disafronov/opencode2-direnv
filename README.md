@@ -26,7 +26,7 @@ Add the plugin to the project or global OpenCode V2 configuration:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode2-direnv"],
+  "plugins": ["@zimniy/opencode2-direnv"],
 }
 ```
 
