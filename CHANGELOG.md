@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/disafronov/opencode2-direnv/compare/v1.0.0...v1.0.1) (2026-11-25)
+
+### Bug Fixes
+
+* rename npm package to @zimniy/opencode2-direnv ([0a4b4bc](https://github.com/disafronov/opencode2-direnv/commit/0a4b4bc5ab64b296341bb80614c1ff9a4ad39dcd))
+
 ## 1.0.0 (2026-11-25)
 
 ### Features

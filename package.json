@@ -1,6 +1,6 @@
 {
   "name": "@zimniy/opencode2-direnv",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenCode V2 server plugin that authorizes direnv environments through native interactive permission prompts",
   "type": "module",
   "license": "Apache-2.0",
