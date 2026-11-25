@@ -1,3 +1,9 @@
+## [1.0.2](https://github.com/disafronov/opencode2-direnv/compare/v1.0.1...v1.0.2) (2026-11-25)
+
+### Bug Fixes
+
+* ci ([83a8643](https://github.com/disafronov/opencode2-direnv/commit/83a8643b9c667f03114ace8e4efacc8bdfa32f01))
+
 ## [1.0.1](https://github.com/disafronov/opencode2-direnv/compare/v1.0.0...v1.0.1) (2026-11-25)
 
 ### Bug Fixes
